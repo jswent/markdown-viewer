@@ -5,6 +5,9 @@ import argparse
 import markdown
 import webbrowser
 import threading
+import queue
+import time
+from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from watchfiles import watch
@@ -26,6 +29,26 @@ GITHUB_CSS = """
 </style>
 """
 
+AUTO_RELOAD_SCRIPT = """
+<script>
+const eventSource = new EventSource('/events');
+eventSource.onmessage = (event) => {
+    if (event.data === 'reload') {
+        location.reload();
+    }
+};
+eventSource.onerror = () => {
+    console.log('SSE connection error, will retry...');
+};
+</script>
+"""
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in separate threads"""
+
+    daemon_threads = True
+
 
 class ContentCache:
     """Stores generated HTML and provides regeneration hook"""
@@ -33,6 +56,7 @@ class ContentCache:
     def __init__(self, md_file):
         self.md_file = md_file
         self.html = self.generate()
+        self.reload_event = threading.Event()
 
     def generate(self):
         """Generate HTML from the markdown file"""
@@ -43,21 +67,66 @@ class ContentCache:
     def refresh(self):
         """Regenerate HTML from file (call when file changes)"""
         self.html = self.generate()
+        # Signal all waiting SSE connections
+        self.reload_event.set()
+        self.reload_event.clear()
 
     def get(self):
         """Get current cached HTML"""
         return self.html
 
+    def wait_for_reload(self, timeout=30):
+        """Wait for a reload event (for SSE clients)"""
+        return self.reload_event.wait(timeout)
+
 
 class MarkdownHandler(BaseHTTPRequestHandler):
-    content_cache: ContentCache | None = None  # ContentCache instance
+    content_cache: ContentCache | None = None
 
     def do_GET(self):
+        if self.path == "/events":
+            self.handle_sse()
+        else:
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.end_headers()
+            html = self.content_cache.get() if self.content_cache else ""
+            self.wfile.write(html.encode("utf-8"))
+
+    def handle_sse(self):
+        """Handle Server-Sent Events connection"""
+        if not self.content_cache:
+            self.send_error(503, "Service not ready")
+            return
+
         self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Content-type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
-        html = self.content_cache.get() if self.content_cache else ""
-        self.wfile.write(html.encode("utf-8"))
+
+        try:
+            while True:
+                # Wait for reload signal (with timeout to keep connection alive)
+                if self.content_cache.wait_for_reload(timeout=30):
+                    message = "data: reload\n\n"
+                    self.wfile.write(message.encode("utf-8"))
+                    self.wfile.flush()
+                else:
+                    # Timeout - send keepalive comment
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # Client disconnected
+            pass
+
+    def handle(self):
+        """Override handle to suppress connection errors from SSE disconnects"""
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # These errors are expected when SSE clients disconnect
+            pass
 
     def log_message(self, format, *args):
         # Suppress default logging
@@ -97,7 +166,6 @@ def convert_markdown(md_text):
             md_text, extensions=["extra", "codehilite", "tables", "fenced_code"]
         )
     except Exception:
-        # Fallback to basic markdown if extensions fail
         return markdown.markdown(md_text)
 
 
@@ -110,6 +178,7 @@ def build_html_page(content, title):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title}</title>
     {GITHUB_CSS}
+    {AUTO_RELOAD_SCRIPT}
 </head>
 <body>
     <div class="markdown-body">
@@ -131,7 +200,6 @@ def watch_and_refresh(cache, md_file):
 
 
 def main():
-    # Parse command line arguments
     parser = argparse.ArgumentParser(
         description="Render Markdown files in browser with GitHub styling"
     )
@@ -140,17 +208,14 @@ def main():
 
     md_file = args.file
 
-    # Create content cache and generate HTML
     try:
         cache = ContentCache(md_file)
     except (FileNotFoundError, IOError) as e:
         print(f"Error: {e}")
         sys.exit(1)
 
-    # Set the cache for the handler
     MarkdownHandler.content_cache = cache
 
-    # Find available port
     try:
         port = find_available_port(6914)
     except RuntimeError as e:
@@ -159,7 +224,7 @@ def main():
 
     # Start server
     try:
-        server = HTTPServer(("localhost", port), MarkdownHandler)
+        server = ThreadingHTTPServer(("localhost", port), MarkdownHandler)
     except Exception as e:
         print(f"Error starting server: {e}")
         sys.exit(1)
@@ -168,13 +233,11 @@ def main():
     print("Watching for changes...")
     print("Press Ctrl+C to stop the server")
 
-    # Start file watcher in background thread
     watcher_thread = threading.Thread(
         target=watch_and_refresh, args=(cache, md_file), daemon=True
     )
     watcher_thread.start()
 
-    # Open browser
     webbrowser.open(f"http://localhost:{port}")
 
     # Keep server running
