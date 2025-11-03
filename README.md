@@ -23,6 +23,7 @@ The `make link` command creates a wrapper script in `~/.local/bin/mdview` (make 
 
 - [`markdown`](https://github.com/Python-Markdown/markdown) >= 3.4.0
 - [`watchfiles`](https://github.com/samuelcolvin/watchfiles) >= 0.18.0
+- [`pygments`](https://github.com/pygments/pygments) >= 2.0.0
 
 ## Uninstalling
 

@@ -5,12 +5,14 @@ import argparse
 import markdown
 import webbrowser
 import threading
-import queue
-import time
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from watchfiles import watch
+from pygments.formatters import HtmlFormatter
+
+# Generate Pygments CSS for syntax highlighting (GitHub style)
+PYGMENTS_CSS = HtmlFormatter(style='github-dark').get_style_defs('.codehilite')
 
 # Link to GitHub's official markdown CSS from CDN
 GITHUB_CSS = """
@@ -26,6 +28,8 @@ GITHUB_CSS = """
         margin: 0 auto;
         padding: 45px;
     }
+    /* Pygments syntax highlighting */
+    """ + PYGMENTS_CSS + """
 </style>
 """
 
