@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import socket
+import argparse
 import markdown
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,14 +25,37 @@ GITHUB_CSS = """
 """
 
 
+class ContentCache:
+    """Stores generated HTML and provides regeneration hook"""
+
+    def __init__(self, md_file):
+        self.md_file = md_file
+        self.html = self.generate()
+
+    def generate(self):
+        """Generate HTML from the markdown file"""
+        md_text = read_markdown_file(self.md_file)
+        html_content = convert_markdown(md_text)
+        return build_html_page(html_content, self.md_file.name)
+
+    def refresh(self):
+        """Regenerate HTML from file (call when file changes)"""
+        self.html = self.generate()
+
+    def get(self):
+        """Get current cached HTML"""
+        return self.html
+
+
 class MarkdownHandler(BaseHTTPRequestHandler):
-    markdown_content = ""
+    content_cache: ContentCache | None = None  # ContentCache instance
 
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(self.markdown_content.encode("utf-8"))
+        html = self.content_cache.get() if self.content_cache else ""
+        self.wfile.write(html.encode("utf-8"))
 
     def log_message(self, format, *args):
         # Suppress default logging
@@ -39,7 +63,7 @@ class MarkdownHandler(BaseHTTPRequestHandler):
 
 
 def find_available_port(start_port=6914, max_attempts=100):
-    """Find an available port starting from start_port."""
+    """Find an available port starting from start_port"""
     for port in range(start_port, start_port + max_attempts):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -52,53 +76,67 @@ def find_available_port(start_port=6914, max_attempts=100):
     )
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python md_viewer.py <markdown_file.md>")
-        sys.exit(1)
+def read_markdown_file(file_path):
+    """Read markdown file with error handling"""
+    if not file_path.exists():
+        raise FileNotFoundError(f"File '{file_path}' not found")
 
-    md_file = Path(sys.argv[1])
-
-    if not md_file.exists():
-        print(f"Error: File '{md_file}' not found")
-        sys.exit(1)
-
-    # Read and convert markdown to HTML
     try:
-        with open(md_file, "r", encoding="utf-8") as f:
-            md_text = f.read()
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
     except Exception as e:
-        print(f"Error reading file: {e}")
-        sys.exit(1)
+        raise IOError(f"Error reading file: {e}") from e
 
-    # Convert markdown with available extensions
+
+def convert_markdown(md_text):
+    """Convert markdown text to HTML with fallback for missing extensions"""
     try:
-        html_content = markdown.markdown(
+        return markdown.markdown(
             md_text, extensions=["extra", "codehilite", "tables", "fenced_code"]
         )
     except Exception:
         # Fallback to basic markdown if extensions fail
-        html_content = markdown.markdown(md_text)
+        return markdown.markdown(md_text)
 
-    # Create full HTML page with GitHub styling
-    full_html = f"""<!DOCTYPE html>
+
+def build_html_page(content, title):
+    """Build complete HTML page with GitHub styling"""
+    return f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{md_file.name}</title>
+    <title>{title}</title>
     {GITHUB_CSS}
 </head>
 <body>
     <div class="markdown-body">
-        {html_content}
+        {content}
     </div>
 </body>
 </html>
 """
 
-    # Set the content for the handler
-    MarkdownHandler.markdown_content = full_html
+
+def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Render Markdown files in browser with GitHub styling"
+    )
+    parser.add_argument("file", type=Path, help="Markdown file to render")
+    args = parser.parse_args()
+
+    md_file = args.file
+
+    # Create content cache and generate HTML
+    try:
+        cache = ContentCache(md_file)
+    except (FileNotFoundError, IOError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Set the cache for the handler
+    MarkdownHandler.content_cache = cache
 
     # Find available port
     try:
