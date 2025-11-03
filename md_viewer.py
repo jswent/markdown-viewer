@@ -4,8 +4,10 @@ import socket
 import argparse
 import markdown
 import webbrowser
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from watchfiles import watch
 
 # Link to GitHub's official markdown CSS from CDN
 GITHUB_CSS = """
@@ -118,6 +120,16 @@ def build_html_page(content, title):
 """
 
 
+def watch_and_refresh(cache, md_file):
+    """Watch markdown file for changes and refresh cache"""
+    for changes in watch(md_file):
+        try:
+            cache.refresh()
+            print(f"Refreshed: {md_file.name}")
+        except Exception as e:
+            print(f"Error refreshing: {e}")
+
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(
@@ -153,7 +165,14 @@ def main():
         sys.exit(1)
 
     print(f"Serving '{md_file.name}' at http://localhost:{port}")
+    print("Watching for changes...")
     print("Press Ctrl+C to stop the server")
+
+    # Start file watcher in background thread
+    watcher_thread = threading.Thread(
+        target=watch_and_refresh, args=(cache, md_file), daemon=True
+    )
+    watcher_thread.start()
 
     # Open browser
     webbrowser.open(f"http://localhost:{port}")

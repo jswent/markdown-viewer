@@ -17,7 +17,12 @@ The `make link` command creates a wrapper script in `~/.local/bin/mdview` (make 
 ## Requirements
 
 - Python >= 3.7
-- `markdown` library (installed automatically)
+- `make` for automatic installation
+
+## Dependencies
+
+- [`markdown`](https://github.com/Python-Markdown/markdown) >= 3.4.0
+- [`watchfiles`](https://github.com/samuelcolvin/watchfiles) >= 0.18.0
 
 ## Uninstalling
 
